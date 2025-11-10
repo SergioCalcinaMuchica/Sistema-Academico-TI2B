@@ -9,7 +9,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from .models import Perfil, Estudiante, Profesor
 from cursos.models import Curso, BloqueHorario, GrupoTeoria, GrupoLaboratorio, GrupoCurso
 from matriculas.models import Matricula, MatriculaLaboratorio
-from reservas.models import Aula
+from reservas.models import Aula, Reserva
 from asistencias.models import RegistroAsistencia, RegistroAsistenciaDetalle
 import math
 from django.utils import timezone
@@ -1342,6 +1342,36 @@ def registro_asistencia(request):
         'historial_fechas': historial_fechas,
     }
     return render(request, 'usuarios/profesor/registro_asistencia.html', contexto)
+
+def obtener_bloques_recurrentes_ocupados(request):
+    profesor_obj, response = check_professor_auth(request)
+    if response: return response
+
+    ocupaciones_aula = BloqueHorario.objects.values(
+        'dia',
+        'horaInicio',
+        'horaFin',
+        'aula__id'
+    ).distinct()
+
+    profesor_id = profesor_obj.perfil.id
+    ocupaciones_profesor = BloqueHorario.objects.filter(
+        grupo_curso__profesor__perfil__id=profesor_id
+    ).values(
+        'dia',
+        'horaInicio',
+        'horaFin',
+        'aula__id'
+    ).distinct()
+
+    bloques_ocupados_profesor = list(ocupaciones_profesor)
+    bloques_ocupados_aula = list(ocupaciones_aula)
+
+    return{
+        'ocupaciones_aula': bloques_ocupados_aula,
+        'ocupaciones_profesor': bloques_ocupados_profesor,
+        'aulas_existentes': list(Aula.objects.values('id','tipo'))
+    }
 
 def reservar_aula(request):
     profesor_obj, response = check_professor_auth(request)
