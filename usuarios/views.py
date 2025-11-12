@@ -1424,110 +1424,94 @@ def horarios_reserva (request):
     aulas_existentes = bloques_ocupados['aulas_existentes']
 
     if request.method == 'POST':
-        # Nota: En el HTML, el campo oculto es 'aula_id'. Usamos ese nombre.
-        data_reserva_str = request.POST.get('data_reserva') 
-        aula_id_post = request.POST.get('aula_id') # CORRECCIÓN: Usar 'aula_id' del formulario HTML
+        # 1. Obtener datos manuales del formulario
+        aula_id_post = request.POST.get('aula_id')
+        fecha_str = request.POST.get('fecha')
+        hora_inicio_str = request.POST.get('hora_inicio')
+        hora_fin_str = request.POST.get('hora_fin')
         
-        if not data_reserva_str or not aula_id_post:
-            messages.error(request, "Datos de reserva incompletos. Por favor, intente de nuevo.")
-            # Se usa request.path para obtener la URL actual correctamente
-            return redirect(request.path + f'?aula_id={aula_id_post}' if aula_id_post else request.path) 
+        # 2. Validación de campos obligatorios
+        if not all([aula_id_post, fecha_str, hora_inicio_str, hora_fin_str]):
+            messages.error(request, "Datos incompletos. Se requiere Aula, Fecha, Hora Inicio y Hora Fin.")
+            return redirect(request.path + f'?aula_id={aula_id_post}' if aula_id_post else request.path)
 
         try:
-            # 1. Extracción y Conversión
-            fecha_str, hora_inicio_str, hora_fin_str = data_reserva_str.split('|')
+            # 3. Conversión de datos
             fecha_reserva = datetime.strptime(fecha_str, '%Y-%m-%d').date()
             hora_inicio = datetime.strptime(hora_inicio_str, '%H:%M').time()
             hora_fin = datetime.strptime(hora_fin_str, '%H:%M').time()
             
-            # CORRECCIÓN 2: Usar Aula.objects.get
-            aula = Aula.objects.get(id=aula_id_post) 
-
-        except (ValueError, IndexError, TypeError):
-            messages.error(request, "Formato de datos de reserva inválido.")
-            return redirect(request.path + f'?aula_id={aula_id_post}' if aula_id_post else request.path)
-        except Aula.DoesNotExist: # Se añade manejo específico de Aula no encontrada
-            messages.error(request, "Aula no encontrada.")
-            return redirect(request.path + f'?aula_id={aula_id_post}' if aula_id_post else request.path)
-        except Exception as e:
-            messages.error(request, f"Ocurrió un error inesperado: {e}")
-            return redirect(request.path + f'?aula_id={aula_id_post}' if aula_id_post else request.path)
-
-        # 2. Validación de Superposiciones
-        
-        # CORRECCIÓN: El atributo weekday() devuelve 0 (Lunes) a 6 (Domingo).
-        # DIAS_MAP espera 'LUNES', 'MARTES', etc. que son las claves.
-        # Mejor usar el índice para obtener la clave del día.
-        dia_semana_clave = list(DIAS_MAP.keys())[fecha_reserva.weekday()]
-        
-        # 2a. Ocupaciones Fijas del Aula (Recurrente, en el aula seleccionada)
-        bloques_ocupados_aula = [
-            b for b in ocupaciones_aulas if b['dia'] == dia_semana_clave and str(b.get('aula__id')) == str(aula_id_post)
-        ]
-        
-        for bloque in bloques_ocupados_aula:
-            if (bloque['horaInicio'] < hora_fin and bloque['horaFin'] > hora_inicio):
-                messages.error(request, f"El aula {aula_id_post} tiene una clase fija recurrente el {DIAS_MAP.get(dia_semana_clave).capitalize()} de {bloque['horaInicio'].strftime('%H:%M')} a {bloque['horaFin'].strftime('%H:%M')}.")
+            # Validar que la hora de inicio sea menor que la hora de fin
+            if hora_inicio >= hora_fin:
+                messages.error(request, "La hora de inicio debe ser anterior a la hora de fin.")
                 return redirect(request.path + f'?aula_id={aula_id_post}')
 
-        # 2b. Ocupaciones Fijas del Profesor (Recurrente en CUALQUIER aula)
-        bloques_ocupados_profesor = [
-            b for b in ocupaciones_profesor if b['dia'] == dia_semana_clave
-        ]
+            aula = Aula.objects.get(id=aula_id_post)
+            
+            # 4. Validación de Superposiciones
+            
+            # 4a. Ocupaciones Fijas del Aula (Recurrente)
+            # Necesitamos obtener los bloques recurrentes para la validación
+            bloques_ocupados_val = obtener_bloques_recurrentes_ocupados(request, aula_id_post)
+            dia_semana_clave = list(DIAS_MAP.keys())[fecha_reserva.weekday()]
+            
+            for bloque in bloques_ocupados_val['ocupaciones_aula']:
+                if bloque['dia'] == dia_semana_clave:
+                    # (InicioBloque < FinReserva) Y (FinBloque > InicioReserva)
+                    if (bloque['horaInicio'] < hora_fin and bloque['horaFin'] > hora_inicio):
+                        messages.error(request, f"Conflicto: El aula {aula_id_post} tiene una clase fija recurrente en ese horario.")
+                        return redirect(request.path + f'?aula_id={aula_id_post}')
 
-        for bloque in bloques_ocupados_profesor:
-            if (bloque['horaInicio'] < hora_fin and bloque['horaFin'] > hora_inicio):
-                messages.error(request, f"Usted tiene una clase fija recurrente el {DIAS_MAP.get(dia_semana_clave).capitalize()} de {bloque['horaInicio'].strftime('%H:%M')} a {bloque['horaFin'].strftime('%H:%M')} en el aula {bloque.get('aula__id', 'otra aula')}.")
+            # 4b. Ocupaciones Fijas del Profesor (Recurrente)
+            for bloque in bloques_ocupados_val['ocupaciones_profesor']:
+                 if bloque['dia'] == dia_semana_clave:
+                    if (bloque['horaInicio'] < hora_fin and bloque['horaFin'] > hora_inicio):
+                        messages.error(request, f"Conflicto: Usted tiene una clase fija recurrente en ese horario (en aula {bloque.get('aula__id', 'otra')}).")
+                        return redirect(request.path + f'?aula_id={aula_id_post}')
+
+            # 4c. Reservas Existentes del Aula (Puntual)
+            reservas_aula_superpuestas = Reserva.objects.filter(
+                aula=aula,
+                fecha_reserva=fecha_reserva,
+                hora_inicio__lt=hora_fin, # Inicio existente < Fin nueva
+                hora_fin__gt=hora_inicio  # Fin existente > Inicio nueva
+            ).exists()
+            
+            if reservas_aula_superpuestas:
+                messages.error(request, f"Conflicto: Ya existe otra reserva puntual para el aula {aula_id_post} en ese periodo.")
                 return redirect(request.path + f'?aula_id={aula_id_post}')
 
-        # Normalizar tiempos de Reserva para comparación: eliminar segundos/microsegundos
-        h_inicio_norm = hora_inicio.replace(second=0, microsecond=0)
-        h_fin_norm = hora_fin.replace(second=0, microsecond=0)
+            # 4d. Reservas Existentes del Profesor (Puntual)
+            reservas_profesor_superpuestas = Reserva.objects.filter(
+                profesor=profesor_obj,
+                fecha_reserva=fecha_reserva,
+                hora_inicio__lt=hora_fin, 
+                hora_fin__gt=hora_inicio 
+            ).exists()
 
-        # 2c. Reservas Existentes del Aula (Puntual)
-        # CORRECCIÓN 3: Usar Reserva.objects.filter (sin paréntesis extra)
-        reservas_aula_superpuestas = Reserva.objects.filter(
-            aula=aula,
-            fecha_reserva=fecha_reserva,
-            hora_inicio__lt=h_fin_norm,
-            hora_fin__gt=h_inicio_norm
-        ).exists()
-        
-        if reservas_aula_superpuestas:
-            messages.error(request, f"Ya existe otra reserva puntual para el aula {aula_id_post} en ese periodo de tiempo.")
-            return redirect(request.path + f'?aula_id={aula_id_post}')
+            if reservas_profesor_superpuestas:
+                  messages.error(request, f"Conflicto: Usted ya tiene otra reserva puntual en ese periodo en otra aula.")
+                  return redirect(request.path + f'?aula_id={aula_id_post}')
 
-        # 2d. Reservas Existentes del Profesor (Puntual en otra aula)
-        # CORRECCIÓN 3: Usar Reserva.objects.filter (sin paréntesis extra)
-        reservas_profesor_superpuestas = Reserva.objects.filter(
-            profesor=profesor_obj,
-            fecha_reserva=fecha_reserva,
-            hora_inicio__lt=h_fin_norm, 
-            hora_fin__gt=h_inicio_norm 
-        ).exists()
-
-        if reservas_profesor_superpuestas:
-              messages.error(request, f"Usted ya tiene otra reserva puntual en ese periodo de tiempo en otra aula.")
-              return redirect(request.path + f'?aula_id={aula_id_post}')
-
-
-        # 3. Guardar la Reserva
-        try:
-            nueva_reserva = Reserva(
+            # 5. Guardar la Reserva
+            Reserva.objects.create(
                 aula=aula,
                 profesor=profesor_obj,
                 fecha_reserva=fecha_reserva,
-                hora_inicio=h_inicio_norm,
-                hora_fin=h_fin_norm
+                hora_inicio=hora_inicio,
+                hora_fin=hora_fin
             )
-            nueva_reserva.save()
             messages.success(request, f"Reserva del aula {aula_id_post} para el {fecha_str} de {hora_inicio_str} a {hora_fin_str} creada con éxito.")
-        except Exception as e:
-            # En un entorno real, logging.error(e)
-            messages.error(request, f"Ocurrió un error al guardar la reserva: {e}")
+            return redirect(request.path + f'?aula_id={aula_id_post}')
 
-        # Después de cualquier operación POST, redirigir
-        return redirect(request.path + f'?aula_id={aula_id_post}')
+        except Aula.DoesNotExist:
+             messages.error(request, "El ID del Aula ingresado no existe.")
+             return redirect(request.path + f'?aula_id={aula_id_post}')
+        except Exception as e:
+             messages.error(request, f"Error al procesar la reserva: {e}")
+             return redirect(request.path + f'?aula_id={aula_id_post}')
+
+    # --- FIN LÓGICA POST ---
 
 
     puntos_corte = set()
@@ -1662,13 +1646,53 @@ def horarios_reserva (request):
             })
         hora_actual = dt_siguiente
     dias_para_encabezado = [f"{DIAS_MAP[list(DIAS_MAP.keys())[d.weekday()]]} {d.strftime('%d/%m')}" for d in dias_a_mostrar]
+
+    mis_reservas_recientes = Reserva.objects.filter(
+        profesor=profesor_obj,
+        fecha_reserva__gte=date.today()
+    ).order_by('fecha_reserva', 'hora_inicio').select_related('aula')
+
     return render(request, 'usuarios/profesor/reservar_aula.html',{
         'dias_a_mostrar': dias_para_encabezado,
         'horario_consolidado': horario_consolidado,
         'aula_actual_id': aula_id_a_filtrar,
         'aulas_existentes': aulas_existentes,
+        'mis_reservas_recientes': mis_reservas_recientes,
     })
 
+def cancelar_reserva(request):
+    profesor_obj, response = check_professor_auth(request)
+    if response: return response
+    if request.method != 'POST':
+        messages.error(request, "Método no permitido.")
+        return redirect('usuarios:reservar_aula') # Redirige a la pág principal de reservas
+
+    try:
+        reserva_id = request.POST.get('reserva_id')
+        profesor_obj, _ = check_professor_auth(request) # Verifica que el profesor esté logueado
+
+        if not reserva_id or not profesor_obj:
+            messages.error(request, "Datos incompletos para la cancelación.")
+            return redirect(request.META.get('HTTP_REFERER', 'usuarios:reservar_aula'))
+
+        # 4. Validación de Seguridad CRÍTICA:
+        # Asegurarse de que la reserva existe Y le pertenece al profesor logueado.
+        reserva_a_borrar = Reserva.objects.get(
+            id=reserva_id,
+            profesor=profesor_obj 
+        )
+        
+        # 5. Borrado
+        reserva_a_borrar.delete()
+        messages.success(request, "Reserva cancelada exitosamente.")
+
+    except Reserva.DoesNotExist:
+        messages.error(request, "No se pudo encontrar la reserva o no tienes permiso para cancelarla.")
+    except Exception as e:
+        messages.error(request, f"Ocurrió un error: {e}")
+
+    # Redirigir a la página anterior (que usualmente es la de reservar_aula)
+    return redirect(request.META.get('HTTP_REFERER', 'usuarios:reservar_aula'))
 
 
 def reservar_aula(request):
