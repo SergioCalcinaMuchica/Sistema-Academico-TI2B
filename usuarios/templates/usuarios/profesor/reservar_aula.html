@@ -10,31 +10,47 @@
         <div class="col-md-8">
             <div class="card shadow-sm border-0">
                 <div class="card-body">
+                    <!-- CORRECCIÓN: Se añade el nuevo input oculto aquí para que sea parte del envío POST -->
                     <form id="reserva-form" action="#" method="POST">
                         {% csrf_token %}
                         <p class="text-muted">Complete los siguientes datos o seleccione una celda disponible en la tabla inferior.</p>
                         
-                        <!-- Input oculto para enviar el aula actual filtrada -->
-                        <input type="hidden" id="aula-id-hidden" name="aula_id" value="{{ aula_actual_id|default:'101' }}">
+                        <!-- 1. Campo ID del Aula (Visible) -->
+                        <div class="mb-3">
+                            <label for="input-aula-id" class="form-label fw-bold">ID del Aula</label>
+                            <input 
+                                type="text" 
+                                class="form-control" 
+                                id="input-aula-id" 
+                                name="aula_id" 
+                                value="{{ aula_actual_id|default:'101' }}" 
+                                placeholder="Ej: A-101, Lab 202"
+                                required 
+                                title="Este valor se actualiza automáticamente con el filtro de aula o al hacer clic en una celda."
+                            >
+                        </div>
                         
+                        <!-- 2. Campo OCULTO para data_reserva -->
+                        <!-- ESTO ES LO QUE EL BACKEND NECESITA -->
+                        <input type="hidden" id="input-data-reserva" name="data_reserva" value="">
+
+                        <!-- 3. Campos de Fecha y Hora -->
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label for="input-fecha" class="form-label fw-bold">Fecha Solicitada</label>
-                                <!-- ID ajustado para JS -->
                                 <input type="date" class="form-control" id="input-fecha" name="fecha" required>
                             </div>
                             <div class="col-md-3 mb-3">
                                 <label for="input-hora-inicio" class="form-label fw-bold">Hora Inicio</label>
-                                <!-- ID ajustado para JS -->
                                 <input type="time" class="form-control" id="input-hora-inicio" name="hora_inicio" required>
                             </div>
                             <div class="col-md-3 mb-3">
                                 <label for="input-hora-fin" class="form-label fw-bold">Hora Fin</label>
-                                <!-- ID ajustado para JS -->
                                 <input type="time" class="form-control" id="input-hora-fin" name="hora_fin" required>
                             </div>
                         </div>
                         
+                        <!-- 4. Campo Tipo de Aula -->
                         <div class="mb-3">
                             <label for="tipo_aula" class="form-label fw-bold">Tipo de Espacio Requerido</label>
                             <select class="form-select" id="tipo_aula" name="tipo_aula" required>
@@ -50,23 +66,22 @@
                     </form>
                 </div>
             </div>
-            
         </div>
         
-        <!-- Columna 2: Mis Reservas Recientes -->
+        <!-- Columna 2: Mis Reservas Recientes (sin cambios)
         <div class="col-md-4">
             <div class="card shadow-sm h-100">
                 <div class="card-header bg-light fw-bold">
                     Mis Reservas Recientes
                 </div>
                 <div class="list-group list-group-flush small">
-                    <!-- Simulación de reservas, puedes reemplazar esto con tu iteración real si tienes la data -->
                     <div class="list-group-item list-group-item-info">Clase (15/11) - Aula A-101</div>
                     <div class="list-group-item list-group-item-info">Laboratorio (16/11) - Lab 202</div>
                 </div>
             </div>
-        </div>
+        </div>-->
     </div>
+
 
     <!-- 2. Horario de Disponibilidad del Aula (El contenido que querías añadir) -->
     <div class="row mt-5">
@@ -225,68 +240,88 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            // Asume que la biblioteca de Bootstrap (con su JS) está cargada
-            const cells = document.querySelectorAll('.celda-reservable');
+            
+            // Referencias a elementos del formulario
+            const cells = document.querySelectorAll('.celda-base'); // Seleccionamos TODAS las celdas
+            const inputAulaId = document.getElementById('input-aula-id'); 
             const inputFecha = document.getElementById('input-fecha');
             const inputHoraInicio = document.getElementById('input-hora-inicio');
             const inputHoraFin = document.getElementById('input-hora-fin');
-            const aulaIdHidden = document.getElementById('aula-id-hidden');
+            const inputDataReserva = document.getElementById('input-data-reserva'); 
             
+            // Referencias al Modal
             const modalElement = document.getElementById('infoModal');
             const modalMessage = document.getElementById('modal-message');
+            const modalHeader = document.getElementById('infoModalHeader');
+            const modalOkButton = document.getElementById('modal-ok-button');
             
-            // Si Bootstrap JS no está cargado, esto podría fallar. Asumimos que base_profesor.html lo incluye.
             let bootstrapModal;
             try {
                 bootstrapModal = new bootstrap.Modal(modalElement);
             } catch(e) {
-                console.error("Bootstrap JS no está disponible para el modal.", e);
+                console.warn("Bootstrap JS no disponible para modal.");
             }
 
-            // 1. Llenar el formulario al hacer clic en una celda disponible
+            // 1. Llenar el formulario SOLO si la celda es reservable
             cells.forEach(cell => {
                 cell.addEventListener('click', function() {
-                    // Solo si tiene datos de reserva (es decir, es una celda 'LIBRE')
+                    
                     const dataReserva = this.getAttribute('data-reserva');
-                    if (dataReserva) {
+                    const aulaIdActual = inputAulaId.value;
+
+                    // CORRECCIÓN CLAVE: VALIDAR SI dataReserva TIENE CONTENIDO
+                    if (dataReserva && dataReserva.trim() !== '') {
+                        // Flujo para celda DISPONIBLE
+                        
                         const dataFecha = this.getAttribute('data-fecha');
                         const dataHoraInicio = this.getAttribute('data-horainicio');
                         const dataHoraFin = this.getAttribute('data-horafin');
-
-                        // 1. Rellenar campos
+                        
+                        // 1. Rellenar campos DE ENVÍO
+                        inputDataReserva.value = dataReserva; 
                         inputFecha.value = dataFecha;
                         inputHoraInicio.value = dataHoraInicio;
                         inputHoraFin.value = dataHoraFin;
                         
-                        // 2. Mostrar mensaje de aviso (Modal)
-                        modalMessage.innerHTML = `Se ha seleccionado el período: <br>
-                                                  <strong>Fecha:</strong> ${dataFecha} <br>
-                                                  <strong>Inicio:</strong> ${dataHoraInicio} <br>
-                                                  <strong>Fin:</strong> ${dataHoraFin} <br><br>
-                                                  Ahora puede completar el tipo de espacio y enviar su solicitud.`;
-                        
+                        // 2. Configurar y Mostrar Modal (Éxito/Info)
+                        if (modalHeader) modalHeader.className = 'modal-header bg-success text-white';
+                        if (modalOkButton) modalOkButton.className = 'btn btn-primary';
+                        if (modalMessage) {
+                            modalMessage.innerHTML = `Se ha seleccionado el período: <br>
+                                                        <strong>Aula:</strong> ${aulaIdActual} <br>
+                                                        <strong>Fecha:</strong> ${dataFecha} <br>
+                                                        <strong>Inicio:</strong> ${dataHoraInicio} <br>
+                                                        <strong>Fin:</strong> ${dataHoraFin} <br><br>
+                                                        Ahora puede completar el tipo de espacio y enviar su solicitud.`;
+                        }
+
                         if (bootstrapModal) {
                            bootstrapModal.show();
                         }
                         
                         // 3. Desplazar hacia el formulario
                         inputFecha.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        
+                    } else {
+                        // Flujo para celda OCUPADA o NO RESERVABLE
+                        
+                        // 1. LIMPIAR EL CAMPO CRÍTICO antes de mostrar el error
+                        inputDataReserva.value = ''; 
+
+                        // 2. Configurar y Mostrar Modal (Error)
+                        if (modalHeader) modalHeader.className = 'modal-header bg-danger text-white';
+                        if (modalOkButton) modalOkButton.className = 'btn btn-danger';
+                        if (modalMessage) {
+                            modalMessage.innerHTML = `<h5 class="fw-bold text-danger">¡Atención! Bloque no disponible.</h5>
+                                                    El período seleccionado está **Ocupado** o no está marcado como reservable. Por favor, seleccione una celda con borde verde claro.`;
+                        }
+                        
+                        if (bootstrapModal) {
+                           bootstrapModal.show();
+                        }
                     }
                 });
             });
-            
-            // 2. Sincronizar el filtro de aula con el campo oculto del formulario
-            const aulaSelect = document.getElementById('aula-select');
-            if (aulaSelect) {
-                // Actualizar el campo oculto cada vez que se selecciona un aula
-                aulaSelect.addEventListener('change', function() {
-                    aulaIdHidden.value = this.value;
-                    // La función de cambio ya recarga la página, así que esto es más bien un fallback
-                });
-
-                // Inicializar el valor del selector al cargar
-                aulaSelect.value = aulaIdHidden.value;
-            }
         });
     </script>
 {% endblock content %}
