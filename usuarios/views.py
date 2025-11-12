@@ -1343,11 +1343,14 @@ def registro_asistencia(request):
     }
     return render(request, 'usuarios/profesor/registro_asistencia.html', contexto)
 
-def obtener_bloques_recurrentes_ocupados(request):
+def obtener_bloques_recurrentes_ocupados(request, aula_id_a_filtrar=None):
     profesor_obj, response = check_professor_auth(request)
     if response: return response
+    aula_queryset = BloqueHorario.objects
+    if aula_id_a_filtrar:
+        aula_queryset = aula_queryset.filter(aula__id=aula_id_a_filtrar)
 
-    ocupaciones_aula = BloqueHorario.objects.values(
+    ocupaciones_aula = aula_queryset.values(
         'dia',
         'horaInicio',
         'horaFin',
@@ -1372,6 +1375,194 @@ def obtener_bloques_recurrentes_ocupados(request):
         'ocupaciones_profesor': bloques_ocupados_profesor,
         'aulas_existentes': list(Aula.objects.values('id','tipo'))
     }
+
+def horarios_reserva (request):
+    profesor_obj, response = check_professor_auth(request)
+    if response: return response
+
+    COLOR_DISPONIBLE = 'bg-success-subtle'
+    COLOR_AULA_OCUPADA = 'bg-danger'
+    COLOR_PROFESOR_OCUPADO = 'bg-warning-soft'
+    COLOR_MI_RESERVA = 'tw-bg-blue-600 tw-text-white'
+    DIAS_MAP = {
+        'LUNES': 'Lunes', 'MARTES': 'Martes', 'MIERCOLES': 'Miercoles', 'JUEVES': 'Jueves', 'VIERNES': 'Viernes'
+    }
+
+    #calculo rango 2 semanas
+    hoy=date.today()
+    dias_hasta_lunes = hoy.weekday()
+    inicio_semana = hoy - timedelta(days=dias_hasta_lunes)
+    fin_periodo = inicio_semana + timedelta(weeks=2) - timedelta(days=1)
+
+    dias_a_mostrar: list[date] = []
+    fecha_actual = inicio_semana
+    while fecha_actual < fin_periodo:
+        if fecha_actual.weekday() < 5:
+            dias_a_mostrar.append(fecha_actual)
+        fecha_actual+=timedelta(days=1)
+
+    #if request.method == 'POST': MAS ADELANTE, LLENADO DE FORMULARIO
+        #fecha_reserva = request.POST.get('fecha')
+        #hora_inicio = request.POST.get('hora_inicio')
+
+    aula_id_a_filtrar = request.GET.get('aula_id')
+    if not aula_id_a_filtrar:
+        aula_id_a_filtrar='101'
+    
+    if not aula_id_a_filtrar:
+        reservas_existentes=[]
+    else:
+        reservas_existentes = Reserva.objects.filter(
+            aula__id=aula_id_a_filtrar,
+            fecha_reserva__gte=inicio_semana,
+            fecha_reserva__lte=fin_periodo
+        ).select_related('aula','profesor')
+
+    bloques_ocupados = obtener_bloques_recurrentes_ocupados(request, aula_id_a_filtrar)
+    ocupaciones_aulas = bloques_ocupados['ocupaciones_aula']
+    ocupaciones_profesor = bloques_ocupados['ocupaciones_profesor']
+    aulas_existentes = bloques_ocupados['aulas_existentes']
+
+    puntos_corte = set()
+    puntos_corte.add(time(20,10)) #HORA FIJA FIN
+    puntos_corte.add(time(7,0))
+    for bloque in ocupaciones_aulas:
+        puntos_corte.add(bloque['horaInicio'])
+        puntos_corte.add(bloque['horaFin'])
+    for bloque in ocupaciones_profesor:
+        puntos_corte.add(bloque['horaInicio'])
+        puntos_corte.add(bloque['horaFin'])
+    for bloque in reservas_existentes:
+        puntos_corte.add(bloque.hora_inicio.replace(second=0, microsecond=0))
+        puntos_corte.add(bloque.hora_fin.replace(second=0, microsecond=0))
+
+    dummy_date = date.today()
+    puntos_corte_dt = sorted(list(set([datetime.combine(dummy_date, t) for t in puntos_corte])))
+
+    #Mapeo de recurrencias pa acceso rápido
+    mapa_rec_aula = {d: [] for d in DIAS_MAP.keys()}
+    for bloque in ocupaciones_aulas:
+        mapa_rec_aula[bloque['dia']].append(bloque)
+        
+    mapa_rec_profesor = {d: [] for d in DIAS_MAP.keys()}
+    for bloque in ocupaciones_profesor:
+        mapa_rec_profesor[bloque['dia']].append(bloque)
+
+    horario_consolidado = []
+    hora_actual = None
+
+    for dt_siguiente in puntos_corte_dt:
+        if hora_actual is None:
+            hora_actual = dt_siguiente
+            continue
+        dt_inicio_fila = hora_actual
+        dt_fin_fila = dt_siguiente
+        if dt_inicio_fila >= dt_fin_fila:
+            hora_actual = dt_siguiente
+            continue
+        
+        hora_inicio_time = dt_inicio_fila.time()
+        hora_fin_time = dt_fin_fila.time()
+        rango_hora_str = f"{hora_inicio_time.strftime('%H:%M')} - {hora_fin_time.strftime('%H:%M')}"
+        fila_data = []
+        hay_clase_en_fila = False
+
+        for fecha_especifica in dias_a_mostrar:
+            dia_semana_str = list(DIAS_MAP.keys())[fecha_especifica.weekday()]
+            estado_celda = {
+                'tipo': 'LIBRE', 
+                'color': COLOR_DISPONIBLE, 
+                'texto': 'Disponible para Reservar',
+                'fecha': fecha_especifica.strftime('%Y-%m-%d'),
+                'horaInicio': dt_inicio_fila.strftime('%H:%M'), 
+                'horaFin': dt_fin_fila.strftime('%H:%M'),
+                'data_reserva': f"{fecha_especifica.strftime('%Y-%m-%d')}|{dt_inicio_fila.strftime('%H:%M')}|{dt_fin_fila.strftime('%H:%M')}",
+            }
+
+            for reserva in reservas_existentes:
+                if reserva.fecha_reserva==fecha_especifica:
+                    r_inicio_time = reserva.hora_inicio.replace(second=0, microsecond=0)
+                    r_fin_time = reserva.hora_fin.replace(second=0, microsecond=0)
+
+                    if (r_inicio_time <= hora_inicio_time and r_fin_time > hora_inicio_time) or \
+                       (r_inicio_time < hora_fin_time and r_fin_time >= hora_fin_time) or \
+                       (r_inicio_time >= hora_inicio_time and r_fin_time <= hora_fin_time):
+                        
+                        hay_clase_en_fila = True
+                        if reserva.profesor.perfil.id == profesor_obj.perfil.id:
+                            estado_celda.update({
+                                'tipo': 'MI RESERVA',
+                                'color': COLOR_MI_RESERVA,
+                                'texto': "Mi Reserva",
+                                'data_reserva': None,
+                            })
+                        else:
+                            estado_celda.update({
+                                'tipo': 'AULA_RESERVA', 
+                                'color': COLOR_AULA_OCUPADA, 
+                                'texto': f"Reservado ({reserva.profesor.perfil.nombre})",
+                                'data_reserva': None,
+                            })
+                        break
+                
+            if estado_celda['tipo'] == 'LIBRE': 
+                bloques_aula_rec = mapa_rec_aula.get(dia_semana_str, [])
+                for bloque in bloques_aula_rec:
+                    if (bloque['horaInicio'] <= hora_inicio_time and bloque['horaFin'] > hora_inicio_time) or \
+                       (bloque['horaInicio'] < hora_fin_time and bloque['horaFin'] >= hora_fin_time) or \
+                       (bloque['horaInicio'] >= hora_inicio_time and bloque['horaFin'] <= hora_fin_time):
+                    
+                        estado_celda.update({
+                            'tipo': 'AULA_FIJA', 
+                            'color': COLOR_AULA_OCUPADA, 
+                            'texto': "Aula Ocupada (Clase Fija)",
+                            'data_reserva': None,
+                        })
+                        break
+                
+            if estado_celda['tipo'] == 'LIBRE':
+                bloques_prof_rec = mapa_rec_profesor.get(dia_semana_str,[])
+                for bloque in bloques_prof_rec:
+                    if (bloque['horaInicio'] <= hora_inicio_time and bloque['horaFin'] > hora_inicio_time) or \
+                       (bloque['horaInicio'] < hora_fin_time and bloque['horaFin'] >= hora_fin_time) or \
+                       (bloque['horaInicio'] >= hora_inicio_time and bloque['horaFin'] <= hora_fin_time):
+
+                        estado_celda.update({
+                         'tipo': 'PROFESOR_FIJO', 
+                         'color': COLOR_PROFESOR_OCUPADO, 
+                         'texto': f"Profesor Ocupado (Otra Clase en {bloque.get('aula__id', 'otra aula')})",
+                         'data_reserva': None,
+                        })
+                        break
+                
+            if estado_celda['tipo'] != 'LIBRE':
+                hay_clase_en_fila=True
+            fila_data.append(estado_celda)
+        
+        if not hay_clase_en_fila and horario_consolidado and horario_consolidado[-1]['tipo']=='LIBRE':
+            fila_anterior = horario_consolidado[-1]
+            fila_anterior['rango'] = f"{fila_anterior['rango'].split(' - ')[0]} - {hora_fin_time.strftime('%H:%M')}"
+            for celda in fila_anterior['data']:
+                if celda['data_reserva']: # Si es reservable (LIBRE/PROFESOR_FIJO)
+                    # El data_reserva es FECHA|HORA_INICIO|HORA_FIN. Actualizamos el HORA_FIN.
+                    parts = celda['data_reserva'].split('|')
+                    celda['data_reserva'] = f"{parts[0]}|{parts[1]}|{dt_fin_fila.strftime('%H:%M')}"
+        else:
+            horario_consolidado.append({
+                'rango': rango_hora_str,
+                'data': fila_data, # Contiene el estado de los 10 días
+                'tipo': 'CLASE' if hay_clase_en_fila else 'LIBRE',
+            })
+        hora_actual = dt_siguiente
+    dias_para_encabezado = [f"{DIAS_MAP[list(DIAS_MAP.keys())[d.weekday()]]} {d.strftime('%d/%m')}" for d in dias_a_mostrar]
+    return render(request, 'usuarios/profesor/reservar_aula.html',{
+        'dias_a_mostrar': dias_para_encabezado,
+        'horario_consolidado': horario_consolidado,
+        'aula_actual_id': aula_id_a_filtrar,
+        'aulas_existentes': aulas_existentes,
+    })
+
+
 
 def reservar_aula(request):
     profesor_obj, response = check_professor_auth(request)
