@@ -1390,9 +1390,16 @@ def horarios_reserva (request):
 
     #calculo rango 2 semanas
     hoy=date.today()
-    dias_hasta_lunes = hoy.weekday()
-    inicio_semana = hoy - timedelta(days=dias_hasta_lunes)
-    fin_periodo = inicio_semana + timedelta(weeks=2) - timedelta(days=1)
+    weekday_hoy = hoy.weekday()
+    if weekday_hoy >= 5: # Si es Sábado o Domingo
+        # Empezar desde el PRÓXIMO Lunes
+        dias_para_lunes = 7 - weekday_hoy
+        inicio_semana = hoy + timedelta(days=dias_para_lunes)
+    else:
+        # Empezar desde el Lunes de ESTA semana
+        dias_hasta_lunes = weekday_hoy
+        inicio_semana = hoy - timedelta(days=dias_hasta_lunes)
+    fin_periodo = inicio_semana + timedelta(weeks=2)
 
     dias_a_mostrar: list[date] = []
     fecha_actual = inicio_semana
@@ -1400,10 +1407,7 @@ def horarios_reserva (request):
         if fecha_actual.weekday() < 5:
             dias_a_mostrar.append(fecha_actual)
         fecha_actual+=timedelta(days=1)
-
-    #if request.method == 'POST': MAS ADELANTE, LLENADO DE FORMULARIO
-        #fecha_reserva = request.POST.get('fecha')
-        #hora_inicio = request.POST.get('hora_inicio')
+    fin_periodo = dias_a_mostrar[-1] if dias_a_mostrar else hoy
 
     aula_id_a_filtrar = request.GET.get('aula_id')
     if not aula_id_a_filtrar:
@@ -1422,6 +1426,10 @@ def horarios_reserva (request):
     ocupaciones_aulas = bloques_ocupados['ocupaciones_aula']
     ocupaciones_profesor = bloques_ocupados['ocupaciones_profesor']
     aulas_existentes = bloques_ocupados['aulas_existentes']
+
+    DIAS_MAP_WEEKDAY = {
+        0: 'LUNES', 1: 'MARTES', 2: 'MIERCOLES', 3: 'JUEVES', 4: 'VIERNES', 5: 'SABADO', 6: 'DOMINGO'
+    }
 
     if request.method == 'POST':
         # 1. Obtener datos manuales del formulario
@@ -1448,6 +1456,33 @@ def horarios_reserva (request):
 
             aula = Aula.objects.get(id=aula_id_post)
             
+            if fecha_reserva.weekday() >= 5: # 5 = Sábado, 6 = Domingo, REGLA 1 NO SABADO NI DOMINGO
+                messages.error(request, "Error: No se pueden realizar reservas en fines de semana (Sábado o Domingo).")
+                return redirect(request.path + f'?aula_id={aula_id_post}')
+            
+            dia_semana_clave = DIAS_MAP_WEEKDAY[fecha_reserva.weekday()]
+
+            # Regla 2: No Fechas Pasadas
+            if fecha_reserva < date.today():
+                messages.error(request, "Error: No se pueden realizar reservas en fechas pasadas.")
+                return redirect(request.path + f'?aula_id={aula_id_post}')
+
+            # Regla 3: Máximo 2 reservas por semana
+            # Calcular el Lunes de la semana de la reserva
+            inicio_semana_reserva = fecha_reserva - timedelta(days=fecha_reserva.weekday())
+            # Calcular el Domingo de esa semana
+            fin_semana_reserva = inicio_semana_reserva + timedelta(days=6)
+            
+            conteo_reservas_semana = Reserva.objects.filter(
+                profesor=profesor_obj,
+                fecha_reserva__gte=inicio_semana_reserva,
+                fecha_reserva__lte=fin_semana_reserva
+            ).count()
+            
+            if conteo_reservas_semana >= 2:
+                messages.error(request, f"Error: Ya ha alcanzado el límite de {conteo_reservas_semana} reservas para la semana del {inicio_semana_reserva.strftime('%d/%m')}.")
+                return redirect(request.path + f'?aula_id={aula_id_post}')
+
             # 4. Validación de Superposiciones
             
             # 4a. Ocupaciones Fijas del Aula (Recurrente)
